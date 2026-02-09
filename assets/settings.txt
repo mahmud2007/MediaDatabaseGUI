@@ -1,0 +1,4 @@
+darkTheme=1
+fontSizeTitle=44
+fontSizeMenu=32
+showFavoritesOnly=0
