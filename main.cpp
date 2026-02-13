@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <fstream>
 #include <cstdint>
+#include <unordered_map>
 
 namespace fs = std::filesystem;
 
@@ -34,6 +35,7 @@ static bool isImageExt(const fs::path& p) {
 static std::vector<std::string> loadImagePaths(const std::string& folder) {
     std::vector<std::string> paths;
     if (!fs::exists(folder)) return paths;
+
     for (const auto& e : fs::directory_iterator(folder)) {
         if (e.is_regular_file() && isImageExt(e.path()))
             paths.push_back(e.path().string());
@@ -46,45 +48,16 @@ static std::string baseName(const std::string& fullPath) {
     return fs::path(fullPath).filename().string();
 }
 
-// ---------- settings ----------
-struct Settings {
-    bool darkTheme = true;
-    int  fontSizeTitle = 44;
-    int  fontSizeMenu  = 22;
-    bool showFavoritesOnly = false;
-};
-
-static Settings loadSettings(const std::string& path) {
-    Settings s;
-    std::ifstream in(path);
-    if (!in.is_open()) return s;
-
-    std::string line;
-    while (std::getline(in, line)) {
-        line = trim(line);
-        if (line.empty()) continue;
-        auto pos = line.find('=');
-        if (pos == std::string::npos) continue;
-        std::string key = trim(line.substr(0, pos));
-        std::string val = trim(line.substr(pos + 1));
-
-        if (key == "darkTheme") s.darkTheme = (val == "1");
-        if (key == "fontSizeTitle") s.fontSizeTitle = std::stoi(val);
-        if (key == "fontSizeMenu")  s.fontSizeMenu  = std::stoi(val);
-        if (key == "showFavoritesOnly") s.showFavoritesOnly = (val == "1");
-    }
-    return s;
+static bool inList(const std::vector<std::string>& v, const std::string& x) {
+    return std::find(v.begin(), v.end(), x) != v.end();
 }
 
-static void saveSettings(const std::string& path, const Settings& s) {
-    std::ofstream out(path, std::ios::trunc);
-    out << "darkTheme=" << (s.darkTheme ? "1" : "0") << "\n";
-    out << "fontSizeTitle=" << s.fontSizeTitle << "\n";
-    out << "fontSizeMenu=" << s.fontSizeMenu << "\n";
-    out << "showFavoritesOnly=" << (s.showFavoritesOnly ? "1" : "0") << "\n";
+static void toggleInList(std::vector<std::string>& v, const std::string& x) {
+    auto it = std::find(v.begin(), v.end(), x);
+    if (it == v.end()) v.push_back(x);
+    else v.erase(it);
 }
 
-// ---------- favorites ----------
 static std::vector<std::string> loadLines(const std::string& path) {
     std::vector<std::string> v;
     std::ifstream in(path);
@@ -101,35 +74,11 @@ static void saveLines(const std::string& path, const std::vector<std::string>& v
     for (auto& s : v) out << s << "\n";
 }
 
-static bool inList(const std::vector<std::string>& v, const std::string& x) {
-    return std::find(v.begin(), v.end(), x) != v.end();
+static void openInDefaultApp(const std::string& path) {
+    std::string cmd = "open \"" + path + "\"";
+    system(cmd.c_str());
 }
 
-static void toggleInList(std::vector<std::string>& v, const std::string& x) {
-    auto it = std::find(v.begin(), v.end(), x);
-    if (it == v.end()) v.push_back(x);
-    else v.erase(it);
-}
-
-// ---------- viewer layout ----------
-static void fitSprite(sf::Sprite& s, const sf::Texture& t,
-                      sf::Vector2u win, float bottomBarH) {
-    auto sz = t.getSize();
-    if (sz.x == 0 || sz.y == 0) return;
-
-    float padding = 30.f;
-    float maxW = (float)win.x - padding * 2.f;
-    float maxH = (float)win.y - bottomBarH - padding * 2.f;
-
-    float scale = std::min(maxW / (float)sz.x, maxH / (float)sz.y);
-    s.setScale({scale, scale});
-    s.setPosition({
-        ((float)win.x - (float)sz.x * scale) / 2.f,
-        (((float)win.y - bottomBarH) - (float)sz.y * scale) / 2.f
-    });
-}
-
-// ---------- copy ----------
 static bool copyToFolderUnique(const std::string& srcPath, const std::string& dstFolder, std::string& outFinalName) {
     fs::path src(srcPath);
     if (!fs::exists(src) || !fs::is_regular_file(src)) return false;
@@ -150,9 +99,137 @@ static bool copyToFolderUnique(const std::string& srcPath, const std::string& ds
     return true;
 }
 
-static void openInDefaultApp(const std::string& path) {
-    std::string cmd = "open \"" + path + "\"";
-    system(cmd.c_str());
+// ---------- settings ----------
+enum class Lang { EN, RU };
+
+struct Settings {
+    bool darkTheme = true;
+    int  fontSizeTitle = 44;
+    int  fontSizeMenu  = 22;
+    bool showFavoritesOnly = false;
+    Lang lang = Lang::EN;
+};
+
+static Settings loadSettings(const std::string& path) {
+    Settings s;
+    std::ifstream in(path);
+    if (!in.is_open()) return s;
+
+    std::string line;
+    while (std::getline(in, line)) {
+        line = trim(line);
+        if (line.empty()) continue;
+        auto pos = line.find('=');
+        if (pos == std::string::npos) continue;
+
+        std::string key = trim(line.substr(0, pos));
+        std::string val = trim(line.substr(pos + 1));
+
+        if (key == "darkTheme") s.darkTheme = (val == "1");
+        if (key == "fontSizeTitle") s.fontSizeTitle = std::stoi(val);
+        if (key == "fontSizeMenu")  s.fontSizeMenu  = std::stoi(val);
+        if (key == "showFavoritesOnly") s.showFavoritesOnly = (val == "1");
+        if (key == "lang") s.lang = (val == "RU") ? Lang::RU : Lang::EN;
+    }
+    return s;
+}
+
+static void saveSettings(const std::string& path, const Settings& s) {
+    std::ofstream out(path, std::ios::trunc);
+    out << "darkTheme=" << (s.darkTheme ? "1" : "0") << "\n";
+    out << "fontSizeTitle=" << s.fontSizeTitle << "\n";
+    out << "fontSizeMenu=" << s.fontSizeMenu << "\n";
+    out << "showFavoritesOnly=" << (s.showFavoritesOnly ? "1" : "0") << "\n";
+    out << "lang=" << (s.lang == Lang::RU ? "RU" : "EN") << "\n";
+}
+
+// ---------- i18n ----------
+enum class Key {
+    Title, Subtitle,
+    MenuPhotos, MenuVideos, MenuAdd, MenuExit,
+    DescPhotos, DescVideos, DescAdd, DescExit,
+    BtnPrev, BtnNext, BtnPlay, BtnPause, BtnInfo, BtnInfoOn,
+    BtnStar, BtnUnstar, BtnFavOn, BtnFavOff, BtnDelete, BtnBack,
+    HelpTop, HelpBottom,
+    ConsoleSourceFolder, ConsoleEnterImageName, ConsoleEnterVideoName,
+    ConsoleCanceled, ConsoleNotFound, ConsoleNotImage, ConsoleAddedImage,
+    ConsoleDeleteAsk
+};
+
+static const std::unordered_map<Key, std::string> EN = {
+    {Key::Title, "Media Database"},
+    {Key::Subtitle, "Source: Desktop/Photos | Library: assets/images"},
+    {Key::MenuPhotos, "Photos (view gallery)"},
+    {Key::MenuVideos, "Videos (open from Desktop/Photos)"},
+    {Key::MenuAdd,   "Add Photo (from Desktop/Photos by name)"},
+    {Key::MenuExit,  "Exit"},
+    {Key::DescPhotos,"View images from assets/images"},
+    {Key::DescVideos,"Type video filename and open in system player"},
+    {Key::DescAdd,   "Type only filename, e.g. cat.jpg"},
+    {Key::DescExit,  "Close the application"},
+    {Key::BtnPrev, "Prev"},
+    {Key::BtnNext, "Next"},
+    {Key::BtnPlay, "Play"},
+    {Key::BtnPause, "Pause"},
+    {Key::BtnInfo, "Info"},
+    {Key::BtnInfoOn, "Info: ON"},
+    {Key::BtnStar, "Star"},
+    {Key::BtnUnstar, "Unstar"},
+    {Key::BtnFavOn, "Fav: ON"},
+    {Key::BtnFavOff, "Fav: OFF"},
+    {Key::BtnDelete, "Delete"},
+    {Key::BtnBack, "Back"},
+    {Key::HelpTop, "UP/DOWN or mouse - select    ENTER/click - open    ESC - exit"},
+    {Key::HelpBottom, "T theme | L language | In Photos: P play, I info, S star, F filter, D delete"},
+    {Key::ConsoleSourceFolder, "Source folder: "},
+    {Key::ConsoleEnterImageName, "Enter image filename (example: cat.jpg)\n> "},
+    {Key::ConsoleEnterVideoName, "Enter video filename (example: clip.mp4)\n> "},
+    {Key::ConsoleCanceled, "Canceled"},
+    {Key::ConsoleNotFound, "File not found: "},
+    {Key::ConsoleNotImage, "Not an image file (allowed: jpg/jpeg/png/bmp)"},
+    {Key::ConsoleAddedImage, "Added image: "},
+    {Key::ConsoleDeleteAsk, "Delete this photo? (y/n): "}
+};
+
+static const std::unordered_map<Key, std::string> RU = {
+    {Key::Title, "Медиа База"},
+    {Key::Subtitle, "Источник: Desktop/Photos | Библиотека: assets/images"},
+    {Key::MenuPhotos, "Фото (галерея)"},
+    {Key::MenuVideos, "Видео (открыть из Desktop/Photos)"},
+    {Key::MenuAdd,   "Добавить фото (по имени из Desktop/Photos)"},
+    {Key::MenuExit,  "Выход"},
+    {Key::DescPhotos,"Просмотр фото из assets/images"},
+    {Key::DescVideos,"Введи имя видеофайла — откроется плеер"},
+    {Key::DescAdd,   "Введи только имя файла, например: cat.jpg"},
+    {Key::DescExit,  "Закрыть приложение"},
+    {Key::BtnPrev, "Назад"},
+    {Key::BtnNext, "Вперёд"},
+    {Key::BtnPlay, "Авто"},
+    {Key::BtnPause, "Стоп"},
+    {Key::BtnInfo, "Инфо"},
+    {Key::BtnInfoOn, "Инфо: ВКЛ"},
+    {Key::BtnStar, "★ В избранное"},
+    {Key::BtnUnstar, "Убрать ★"},
+    {Key::BtnFavOn, "Избр: ВКЛ"},
+    {Key::BtnFavOff, "Избр: ВЫКЛ"},
+    {Key::BtnDelete, "Удалить"},
+    {Key::BtnBack, "Меню"},
+    {Key::HelpTop, "↑/↓ или мышь — выбор    Enter/клик — открыть    Esc — выход"},
+    {Key::HelpBottom, "T тема | L язык | В Фото: P авто, I инфо, S избранное, F фильтр, D удалить"},
+    {Key::ConsoleSourceFolder, "Папка-источник: "},
+    {Key::ConsoleEnterImageName, "Введи имя фото (пример: cat.jpg)\n> "},
+    {Key::ConsoleEnterVideoName, "Введи имя видео (пример: clip.mp4)\n> "},
+    {Key::ConsoleCanceled, "Отмена"},
+    {Key::ConsoleNotFound, "Файл не найден: "},
+    {Key::ConsoleNotImage, "Это не фото (jpg/jpeg/png/bmp)"},
+    {Key::ConsoleAddedImage, "Добавлено: "},
+    {Key::ConsoleDeleteAsk, "Удалить фото? (y/n): "}
+};
+
+static std::string tr(Key k, Lang lang) {
+    const auto& dict = (lang == Lang::RU) ? RU : EN;
+    auto it = dict.find(k);
+    return it == dict.end() ? "??" : it->second;
 }
 
 // ---------- UI Button ----------
@@ -166,7 +243,10 @@ struct UIButton {
 
     bool contains(sf::Vector2f p) const { return rect.getGlobalBounds().contains(p); }
 
-    void setLabel(const std::string& s) { text.setString(s); layoutText(); }
+    void setLabel(const std::string& s) {
+        text.setString(s);
+        layoutText();
+    }
 
     void layoutText() {
         auto pos = rect.getPosition();
@@ -195,22 +275,38 @@ struct UIButton {
     void draw(sf::RenderWindow& w) const { w.draw(rect); w.draw(text); }
 };
 
-// ---------- app ----------
+// ---------- layout helpers ----------
+static void fitSprite(sf::Sprite& s, const sf::Texture& t,
+                      sf::Vector2u win, float bottomBarH) {
+    auto sz = t.getSize();
+    if (sz.x == 0 || sz.y == 0) return;
+
+    float padding = 30.f;
+    float maxW = (float)win.x - padding * 2.f;
+    float maxH = (float)win.y - bottomBarH - padding * 2.f;
+
+    float scale = std::min(maxW / (float)sz.x, maxH / (float)sz.y);
+    s.setScale({scale, scale});
+    s.setPosition({
+        ((float)win.x - (float)sz.x * scale) / 2.f,
+        (((float)win.y - bottomBarH) - (float)sz.y * scale) / 2.f
+    });
+}
+
 enum class Screen { Menu, Photos };
 
 int main() {
     const std::string IMAGES = "assets/images";
     const std::string VIDEOS = "assets/videos";
-    const std::string FONT   = "assets/fonts/3966.ttf";
-
+    const std::string FONT   = "assets/fonts/DejaVuSans.ttf";
     const std::string SETTINGS_FILE  = "assets/settings.txt";
     const std::string FAVORITES_FILE = "assets/favorites.txt";
 
-    // Desktop Photos source folder
     const std::string SOURCE_PHOTOS = std::string(getenv("HOME")) + "/Desktop/Photos";
 
     fs::create_directories(IMAGES);
     fs::create_directories(VIDEOS);
+    fs::create_directories("assets/fonts");
     fs::create_directories(SOURCE_PHOTOS);
 
     Settings settings = loadSettings(SETTINGS_FILE);
@@ -225,44 +321,31 @@ int main() {
         return 0;
     }
 
-    // menu
-    std::vector<std::string> menu = {
-        "Photos (view gallery)",
-        "Videos (open from Desktop/Photos)",
-        "Add Photo (from Desktop/Photos by name)",
-        "Exit"
-    };
-    std::vector<std::string> desc = {
-        "View images from assets/images",
-        "Open a video if it exists in Desktop/Photos (type name)",
-        "Type only filename, e.g. cat.jpg",
-        "Close the application"
-    };
+    // menu data (will be filled by applyLanguage())
+    std::vector<std::string> menu(4);
+    std::vector<std::string> desc(4);
     int menuIndex = 0;
-    std::vector<sf::FloatRect> menuHit(menu.size());
+    std::vector<sf::FloatRect> menuHit(4);
 
     // viewer state
     std::vector<std::string> photos;
     int photoIdx = 0;
 
-    sf::Texture tex;
     sf::Image dummyImg({1,1}, sf::Color::White);
+    sf::Texture tex;
     (void)tex.loadFromImage(dummyImg);
     sf::Sprite spr(tex);
 
-    // bottom bar
     float barH = 86.f;
     sf::RectangleShape bar({(float)window.getSize().x, barH});
     sf::Text caption(font, "", 20);
     sf::Text counter(font, "", 16);
 
-    // fade
     float fade = 255.f;
     bool  fadingOut = false;
     bool  fadingIn  = false;
     int   pendingIdx = -1;
 
-    // slideshow + info
     bool slideshow = false;
     float slideTimer = 0.f;
     const float SLIDE_DELAY = 2.5f;
@@ -270,7 +353,6 @@ int main() {
 
     sf::Clock dtClock;
 
-    // viewer buttons
     UIButton btnPrev(font, "Prev", 15);
     UIButton btnNext(font, "Next", 15);
     UIButton btnPlay(font, "Play", 15);
@@ -294,7 +376,6 @@ int main() {
 
     auto applyFilters = [&]() {
         auto all = loadImagePaths(IMAGES);
-
         if (settings.showFavoritesOnly) {
             std::vector<std::string> onlyFav;
             for (auto& p : all) {
@@ -329,11 +410,11 @@ int main() {
         placeRight(btnBack, 90.f);
         placeRight(btnDel,  95.f);
         placeRight(btnFav,  110.f);
-        placeRight(btnStar, 80.f);
-        placeRight(btnInfo, 80.f);
-        placeRight(btnPlay, 80.f);
-        placeRight(btnNext, 80.f);
-        placeRight(btnPrev, 80.f);
+        placeRight(btnStar, 120.f);
+        placeRight(btnInfo, 90.f);
+        placeRight(btnPlay, 90.f);
+        placeRight(btnNext, 85.f);
+        placeRight(btnPrev, 85.f);
 
         btnPrev.setHovered(false, settings.darkTheme);
         btnNext.setHovered(false, settings.darkTheme);
@@ -359,21 +440,49 @@ int main() {
 
         caption.setString((fav ? "★ " : "") + file);
         counter.setString(std::to_string(photoIdx + 1) + " / " + std::to_string(photos.size()));
-
-        btnStar.setLabel(fav ? "Unstar" : "Star");
-        btnFav.setLabel(settings.showFavoritesOnly ? "Fav: ON" : "Fav: OFF");
-        btnPlay.setLabel(slideshow ? "Pause" : "Play");
-        btnInfo.setLabel(showInfo ? "Info: ON" : "Info");
     };
 
-    auto enterPhotos = [&]() {
+    // language applier (updates menu, descriptions, button labels)
+    auto applyLanguage = [&]() {
+        menu = {
+            tr(Key::MenuPhotos, settings.lang),
+            tr(Key::MenuVideos, settings.lang),
+            tr(Key::MenuAdd, settings.lang),
+            tr(Key::MenuExit, settings.lang)
+        };
+        desc = {
+            tr(Key::DescPhotos, settings.lang),
+            tr(Key::DescVideos, settings.lang),
+            tr(Key::DescAdd, settings.lang),
+            tr(Key::DescExit, settings.lang)
+        };
+
+        btnPrev.setLabel(tr(Key::BtnPrev, settings.lang));
+        btnNext.setLabel(tr(Key::BtnNext, settings.lang));
+        btnDel .setLabel(tr(Key::BtnDelete, settings.lang));
+        btnBack.setLabel(tr(Key::BtnBack, settings.lang));
+
+        btnPlay.setLabel(slideshow ? tr(Key::BtnPause, settings.lang) : tr(Key::BtnPlay, settings.lang));
+        btnInfo.setLabel(showInfo ? tr(Key::BtnInfoOn, settings.lang) : tr(Key::BtnInfo, settings.lang));
+        btnFav .setLabel(settings.showFavoritesOnly ? tr(Key::BtnFavOn, settings.lang) : tr(Key::BtnFavOff, settings.lang));
+
+        if (!photos.empty()) {
+            bool fav = inList(favorites, baseName(photos[photoIdx]));
+            btnStar.setLabel(fav ? tr(Key::BtnUnstar, settings.lang) : tr(Key::BtnStar, settings.lang));
+        } else {
+            btnStar.setLabel(tr(Key::BtnStar, settings.lang));
+        }
+    };
+
+    auto enterPhotos = [&]() -> bool {
         photos = applyFilters();
 
-        // safety: if filter hides everything, disable it
+        // if filter hides everything, disable it automatically
         if (photos.empty() && settings.showFavoritesOnly) {
             settings.showFavoritesOnly = false;
             saveSettings(SETTINGS_FILE, settings);
             photos = applyFilters();
+            applyLanguage();
         }
 
         if (photos.empty()) {
@@ -394,6 +503,7 @@ int main() {
 
         refreshBarColors();
         loadCurrentPhoto();
+        applyLanguage();
         return true;
     };
 
@@ -406,56 +516,53 @@ int main() {
         fadingIn = false;
     };
 
-    // NEW addPhoto: type filename from Desktop/Photos
     auto addPhotoFromDesktopFolder = [&]() {
-        std::cout << "\nSource folder: " << SOURCE_PHOTOS << "\n";
-        std::cout << "Enter image filename (example: cat.jpg)\n> ";
+        std::cout << "\n" << tr(Key::ConsoleSourceFolder, settings.lang) << SOURCE_PHOTOS << "\n";
+        std::cout << tr(Key::ConsoleEnterImageName, settings.lang);
 
         std::string name;
         std::getline(std::cin, name);
         name = trim(name);
 
         if (name.empty()) {
-            std::cout << "Canceled\n";
+            std::cout << tr(Key::ConsoleCanceled, settings.lang) << "\n";
             return;
         }
 
         fs::path src = fs::path(SOURCE_PHOTOS) / name;
-
         if (!fs::exists(src)) {
-            std::cout << "File not found: " << src << "\n";
+            std::cout << tr(Key::ConsoleNotFound, settings.lang) << src << "\n";
             return;
         }
         if (!isImageExt(src)) {
-            std::cout << "Not an image file (allowed: jpg/jpeg/png/bmp)\n";
+            std::cout << tr(Key::ConsoleNotImage, settings.lang) << "\n";
             return;
         }
 
         std::string finalName;
         if (copyToFolderUnique(src.string(), IMAGES, finalName)) {
-            std::cout << "Added image: " << finalName << "\n";
+            std::cout << tr(Key::ConsoleAddedImage, settings.lang) << finalName << "\n";
         } else {
             std::cout << "Failed to copy image\n";
         }
     };
 
-    // Videos: type filename from Desktop/Photos and open
     auto openVideoFromDesktopFolder = [&]() {
-        std::cout << "\nSource folder: " << SOURCE_PHOTOS << "\n";
-        std::cout << "Enter video filename (example: clip.mp4)\n> ";
+        std::cout << "\n" << tr(Key::ConsoleSourceFolder, settings.lang) << SOURCE_PHOTOS << "\n";
+        std::cout << tr(Key::ConsoleEnterVideoName, settings.lang);
 
         std::string name;
         std::getline(std::cin, name);
         name = trim(name);
 
         if (name.empty()) {
-            std::cout << "Canceled\n";
+            std::cout << tr(Key::ConsoleCanceled, settings.lang) << "\n";
             return;
         }
 
         fs::path src = fs::path(SOURCE_PHOTOS) / name;
         if (!fs::exists(src)) {
-            std::cout << "File not found: " << src << "\n";
+            std::cout << tr(Key::ConsoleNotFound, settings.lang) << src << "\n";
             return;
         }
         openInDefaultApp(src.string());
@@ -465,8 +572,10 @@ int main() {
         if (photos.empty()) return;
 
         std::string file = baseName(photos[photoIdx]);
-        std::cout << "\nDelete this photo? (y/n): " << file << "\n";
-        std::string ans; std::getline(std::cin, ans);
+        std::cout << "\n" << tr(Key::ConsoleDeleteAsk, settings.lang) << file << "\n";
+
+        std::string ans;
+        std::getline(std::cin, ans);
         ans = toLower(trim(ans));
         if (!(ans == "y" || ans == "yes")) return;
 
@@ -484,6 +593,7 @@ int main() {
 
         if (photoIdx >= (int)photos.size()) photoIdx = (int)photos.size() - 1;
         loadCurrentPhoto();
+        applyLanguage();
     };
 
     auto runMenuAction = [&](int index, Screen& screen) {
@@ -498,9 +608,13 @@ int main() {
         }
     };
 
+    // init visuals
+    refreshBarColors();
+    layoutViewer();
+    applyLanguage();
+
     Screen screen = Screen::Menu;
 
-    // ---------- loop ----------
     while (window.isOpen()) {
         float dt = dtClock.restart().asSeconds();
         sf::Vector2f mouse = (sf::Vector2f)sf::Mouse::getPosition(window);
@@ -526,6 +640,7 @@ int main() {
                         photoIdx = pendingIdx;
                         pendingIdx = -1;
                         loadCurrentPhoto();
+                        applyLanguage();
                     }
                     fadingIn = true;
                 }
@@ -574,6 +689,12 @@ int main() {
                     if (screen == Screen::Photos) layoutViewer();
                 }
 
+                if (k->code == sf::Keyboard::Key::L) {
+                    settings.lang = (settings.lang == Lang::EN) ? Lang::RU : Lang::EN;
+                    saveSettings(SETTINGS_FILE, settings);
+                    applyLanguage();
+                }
+
                 if (screen == Screen::Menu) {
                     if (k->code == sf::Keyboard::Key::Up) menuIndex = (menuIndex - 1 + 4) % 4;
                     if (k->code == sf::Keyboard::Key::Down) menuIndex = (menuIndex + 1) % 4;
@@ -585,12 +706,12 @@ int main() {
                     if (k->code == sf::Keyboard::Key::P) {
                         slideshow = !slideshow;
                         slideTimer = 0.f;
-                        btnPlay.setLabel(slideshow ? "Pause" : "Play");
+                        btnPlay.setLabel(slideshow ? tr(Key::BtnPause, settings.lang) : tr(Key::BtnPlay, settings.lang));
                     }
 
                     if (k->code == sf::Keyboard::Key::I) {
                         showInfo = !showInfo;
-                        btnInfo.setLabel(showInfo ? "Info: ON" : "Info");
+                        btnInfo.setLabel(showInfo ? tr(Key::BtnInfoOn, settings.lang) : tr(Key::BtnInfo, settings.lang));
                     }
 
                     if (k->code == sf::Keyboard::Key::F) {
@@ -598,8 +719,10 @@ int main() {
                         saveSettings(SETTINGS_FILE, settings);
                         photos = applyFilters();
                         photoIdx = 0;
+                        btnFav.setLabel(settings.showFavoritesOnly ? tr(Key::BtnFavOn, settings.lang) : tr(Key::BtnFavOff, settings.lang));
                         if (!photos.empty()) loadCurrentPhoto();
                         else screen = Screen::Menu;
+                        applyLanguage();
                     }
 
                     if (k->code == sf::Keyboard::Key::S) {
@@ -608,6 +731,7 @@ int main() {
                             toggleInList(favorites, file);
                             saveLines(FAVORITES_FILE, favorites);
                             loadCurrentPhoto();
+                            applyLanguage();
                         }
                     }
 
@@ -618,7 +742,6 @@ int main() {
                 }
             }
 
-            // mouse click
             if (const auto* mb = ev->getIf<sf::Event::MouseButtonPressed>()) {
                 if (mb->button == sf::Mouse::Button::Left) {
                     if (screen == Screen::Menu) {
@@ -635,11 +758,11 @@ int main() {
                         else if (btnPlay.contains(mouse)) {
                             slideshow = !slideshow;
                             slideTimer = 0.f;
-                            btnPlay.setLabel(slideshow ? "Pause" : "Play");
+                            btnPlay.setLabel(slideshow ? tr(Key::BtnPause, settings.lang) : tr(Key::BtnPlay, settings.lang));
                         }
                         else if (btnInfo.contains(mouse)) {
                             showInfo = !showInfo;
-                            btnInfo.setLabel(showInfo ? "Info: ON" : "Info");
+                            btnInfo.setLabel(showInfo ? tr(Key::BtnInfoOn, settings.lang) : tr(Key::BtnInfo, settings.lang));
                         }
                         else if (btnStar.contains(mouse)) {
                             if (!photos.empty()) {
@@ -647,6 +770,7 @@ int main() {
                                 toggleInList(favorites, file);
                                 saveLines(FAVORITES_FILE, favorites);
                                 loadCurrentPhoto();
+                                applyLanguage();
                             }
                         }
                         else if (btnFav.contains(mouse)) {
@@ -656,6 +780,7 @@ int main() {
                             photoIdx = 0;
                             if (!photos.empty()) loadCurrentPhoto();
                             else screen = Screen::Menu;
+                            applyLanguage();
                         }
                         else if (btnDel.contains(mouse)) {
                             deleteCurrent();
@@ -688,10 +813,10 @@ int main() {
                 window.draw(glow2);
             }
 
-            sf::Text title(font, "Media Database", (unsigned int)settings.fontSizeTitle);
+            sf::Text title(font, tr(Key::Title, settings.lang), (unsigned int)settings.fontSizeTitle);
             title.setFillColor(settings.darkTheme ? sf::Color(245,245,245) : sf::Color(30,30,35));
 
-            sf::Text subtitle(font, "Source: Desktop/Photos  |  Library: assets/images", 16);
+            sf::Text subtitle(font, tr(Key::Subtitle, settings.lang), 16);
             subtitle.setFillColor(settings.darkTheme ? sf::Color(180,180,180) : sf::Color(90,90,100));
 
             sf::Vector2f cardSize(760.f, 360.f);
@@ -710,12 +835,12 @@ int main() {
             window.draw(title);
             window.draw(subtitle);
 
-            sf::Text hint(font, "UP/DOWN or mouse - select    ENTER/click - open    ESC - exit", 16);
+            sf::Text hint(font, tr(Key::HelpTop, settings.lang), 16);
             hint.setFillColor(settings.darkTheme ? sf::Color(170,170,170) : sf::Color(100,100,110));
             hint.setPosition({cardPos.x, cardPos.y + cardSize.y + 18.f});
             window.draw(hint);
 
-            sf::Text hint2(font, "T - theme | In Photos: P play, I info, S star, F filter, D delete", 15);
+            sf::Text hint2(font, tr(Key::HelpBottom, settings.lang), 15);
             hint2.setFillColor(settings.darkTheme ? sf::Color(160,160,160) : sf::Color(110,110,120));
             hint2.setPosition({cardPos.x, cardPos.y + cardSize.y + 42.f});
             window.draw(hint2);
@@ -792,6 +917,16 @@ int main() {
             btnDel.draw(window);
             btnBack.draw(window);
 
+            // top help line
+            sf::Text help(font,
+                          (settings.lang == Lang::RU)
+                              ? "Клавиши: ←/→ | P авто | I инфо | S избранное | F фильтр | D удалить | L язык | Esc меню"
+                              : "Keys: LEFT/RIGHT | P play | I info | S star | F filter | D delete | L language | ESC menu",
+                          13);
+            help.setFillColor(settings.darkTheme ? sf::Color(175,175,175) : sf::Color(90,90,100));
+            help.setPosition({20.f, 14.f});
+            window.draw(help);
+
             if (showInfo && !photos.empty()) {
                 auto imgSize = tex.getSize();
                 fs::path p = photos[photoIdx];
@@ -802,32 +937,35 @@ int main() {
                 std::string file = baseName(photos[photoIdx]);
                 bool fav = inList(favorites, file);
 
-                sf::RectangleShape infoBg({460.f, 128.f});
+                sf::RectangleShape infoBg({480.f, 132.f});
                 infoBg.setFillColor(sf::Color(0,0,0,160));
-                infoBg.setPosition({20.f, 20.f});
+                infoBg.setPosition({20.f, 40.f});
                 window.draw(infoBg);
 
                 sf::Text info(font, "", 15);
                 info.setFillColor(sf::Color(240,240,240));
-                info.setPosition({30.f, 28.f});
+                info.setPosition({30.f, 48.f});
 
-                info.setString(
-                    std::string("File: ") + file + "\n" +
-                    "Resolution: " + std::to_string(imgSize.x) + " x " + std::to_string(imgSize.y) + "\n" +
-                    "Size: " + std::to_string(kb) + " KB\n" +
-                    "Source folder: Desktop/Photos\n" +
-                    (fav ? "★ Favorite" : "")
-                );
+                if (settings.lang == Lang::RU) {
+                    info.setString(
+                        std::string("Файл: ") + file + "\n" +
+                        "Разрешение: " + std::to_string(imgSize.x) + " x " + std::to_string(imgSize.y) + "\n" +
+                        "Размер: " + std::to_string(kb) + " KB\n" +
+                        "Источник: Desktop/Photos\n" +
+                        (fav ? "★ Избранное" : "")
+                    );
+                } else {
+                    info.setString(
+                        std::string("File: ") + file + "\n" +
+                        "Resolution: " + std::to_string(imgSize.x) + " x " + std::to_string(imgSize.y) + "\n" +
+                        "Size: " + std::to_string(kb) + " KB\n" +
+                        "Source: Desktop/Photos\n" +
+                        (fav ? "★ Favorite" : "")
+                    );
+                }
 
                 window.draw(info);
             }
-
-            sf::Text help(font,
-                          "Keys: LEFT/RIGHT | P play | I info | S star | F filter | D delete | ESC menu",
-                          13);
-            help.setFillColor(settings.darkTheme ? sf::Color(175,175,175) : sf::Color(90,90,100));
-            help.setPosition({20.f, 14.f});
-            window.draw(help);
         }
 
         window.display();
